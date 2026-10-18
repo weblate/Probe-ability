@@ -253,7 +253,7 @@ view: graph
 - **Dashed lines** — the **target** (it steps if you change the target mid-cook) and, once a heating rate is known, the **pull** temperature.
 - The time remaining and "done at" time sit under the chart, as the ring's centre does.
 
-A small button in the corner of the card (or of each probe tile in individual mode) switches between graph and ring; the choice is remembered in the browser for that card until you change `view` in the card configuration. The graph is shown while a probe is cooking — not while it is collecting data or after it is done.
+A small button in the corner of the card (or of each probe tile in individual mode) switches between graph and ring; the choice is remembered in the browser until you change `view` in the card configuration. It applies to that button's own card (combined mode) or probe tile (individual mode) only, so each tile can show the ring or the graph independently. Cards with the same configuration share the saved choice when the page is reloaded. The graph is shown while a probe is cooking — not while it is collecting data or after it is done.
 
 **Forecast curve.** The forecast always ends at the ETA the card and the `time_remaining` sensor already show, whichever prediction model produced it. Between now and then it follows Newton's law of heating — rising quickly while the meat is cold and flattening as it nears the cooker temperature — and falls back to a straight line when the cooker is barely hotter than the target. The history comes from a read-only websocket command, `probe_ability/history` (`entity_id`, `probe`, optional `combined` to follow the slowest probe), which returns the recorded readings (thinned to about 300 points), the target history and the forecast; temperatures are in °C.
 

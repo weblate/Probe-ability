@@ -447,6 +447,7 @@ class CookPredictorCard extends HTMLElement {
     this._collapsible = config.collapsible !== false;
     // Per-probe history cache for the graph view (see _fetchGraph).
     this._graphData = {};
+    this._views = null;   // ring / graph per tile, read from storage on first use (see _viewFor)
     // Per-slot form state: { category, cut, doneness, temp }
     // Key: "combined" or a probe index.
     // Backed by localStorage so selections survive page navigation.
@@ -1263,29 +1264,46 @@ class CookPredictorCard extends HTMLElement {
   // entity — only for as long as the configured value stays what it was, so
   // changing `view` in the editor always wins.
 
-  get _viewKey() { return `probe_ability_view:${this._config.entity}`; }
+  // The choice is per card and per probe tile — `key` is "combined" or the
+  // probe slot — so toggling one tile leaves the others alone.  It is stored per
+  // card *configuration* (entity + the probes it shows), because cards have no
+  // identity of their own; each live card keeps its own copy (_views), so two
+  // cards with the same entity do not follow each other until the page reloads.
+  get _viewKey() { return `probe_ability_view:${this._config.entity}|${(this._config.probe_sensors || []).join(",")}`; }
   get _viewBase() { return this._config?.view === "graph" ? "graph" : "ring"; }
 
-  get _view() {
+  _storedViews() {
     try {
       const o = JSON.parse(localStorage.getItem(this._viewKey) || "null");
-      if (o && o.base === this._viewBase && (o.view === "ring" || o.view === "graph")) return o.view;
+      if (o && o.base === this._viewBase && o.views && typeof o.views === "object") return o.views;
     } catch (e) {}
-    return this._viewBase;
+    return {};
   }
 
-  _setView(view) {
-    try { localStorage.setItem(this._viewKey, JSON.stringify({ base: this._viewBase, view })); } catch (e) {}
+  _viewFor(key) {
+    const v = (this._views || (this._views = this._storedViews()))[key];
+    return v === "ring" || v === "graph" ? v : this._viewBase;
+  }
+
+  _setView(key, view) {
+    this._views = { ...(this._views || this._storedViews()), [key]: view };
+    // Merge into what is stored now rather than overwriting it: another card
+    // with the same configuration may have saved its own tiles meanwhile.
+    try {
+      localStorage.setItem(this._viewKey, JSON.stringify({
+        base: this._viewBase, views: { ...this._storedViews(), [key]: view },
+      }));
+    } catch (e) {}
     this._render();
   }
 
-  // The ring/graph switch.  `float` pins it to the top-right corner of a
-  // position:relative wrapper (used over the ring); the graph carries it in
-  // its own header row instead.
-  _viewToggle(id, float) {
-    const next = this._view === "graph" ? "ring" : "graph";
+  // The ring/graph switch for `key` (see _viewFor).  `float` pins it to the
+  // top-right corner of a position:relative wrapper (used over the ring); the
+  // graph carries it in its own header row instead.
+  _viewToggle(id, float, key) {
+    const next = this._viewFor(key) === "graph" ? "ring" : "graph";
     const label = next === "graph" ? t("switch_to_graph") : t("switch_to_ring");
-    return `<button id="${id}" class="pa-view-toggle" title="${label}" aria-label="${label}"
+    return `<button id="${id}" class="pa-view-toggle" data-view-key="${key}" title="${label}" aria-label="${label}"
         style="${float ? "position:absolute;top:0;right:0;" : ""}background:none;border:none;padding:2px;margin:0;
                cursor:pointer;color:var(--secondary-text-color);line-height:0;flex-shrink:0;">
         <ha-icon icon="${next === "graph" ? "mdi:chart-line" : "mdi:timer-outline"}" style="--mdc-icon-size:20px;"></ha-icon>
@@ -1295,14 +1313,13 @@ class CookPredictorCard extends HTMLElement {
   // Wire the toggles once (data-wired); what they switch to is read from
   // data-next at click time, so a kept button never goes stale.
   _wireViewToggles() {
-    const next = this._view === "graph" ? "ring" : "graph";
     for (const b of this.querySelectorAll(".pa-view-toggle")) {
-      b.dataset.next = next;
+      b.dataset.next = this._viewFor(b.dataset.viewKey) === "graph" ? "ring" : "graph";
       if (b.dataset.wired) continue;
       b.dataset.wired = "1";
       b.addEventListener("click", (e) => {
         e.stopPropagation();
-        this._setView(b.dataset.next);
+        this._setView(b.dataset.viewKey, b.dataset.next);
       });
     }
   }
@@ -1327,7 +1344,7 @@ class CookPredictorCard extends HTMLElement {
       .finally(() => {
         g.busy = false;
         // Never rebuild under a form control or an open stop prompt.
-        if (this._view === "graph" && !this._confirmPending && !this._formControlFocused()) this._render();
+        if (this._viewFor(key) === "graph" && !this._confirmPending && !this._formControlFocused()) this._render();
       });
     return g.data;
   }
@@ -1392,7 +1409,7 @@ class CookPredictorCard extends HTMLElement {
     const gkey = o.combined ? "combined" : i;
     const W = this._graphW?.[gkey] || (compact ? 230 : 320);
     const H = Math.max(110, Math.min(190, Math.round(W * 0.5)));
-    const toggle = this._viewToggle(o.toggleId);
+    const toggle = this._viewToggle(o.toggleId, false, gkey);
     const rd = g && Array.isArray(g.readings) ? g.readings : [];
     const row = (inner) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:24px;">${inner}${toggle}</div>`;
 
@@ -2015,13 +2032,13 @@ class CookPredictorCard extends HTMLElement {
             ${etaDisplay ? `<div style="font-size:0.95em;color:var(--secondary-text-color);margin-top:2px;">${t("done_at", { eta: etaDisplay })}</div>` : ""}
           </div>`;
     // Combined mode's countdown is the slowest probe's, so the graph follows that probe.
-    const visual = this._view === "graph"
+    const visual = this._viewFor("combined") === "graph"
       ? this._graphBlock(this._entityProbeIndex(attrs), {
           toggleId: "cp-view-toggle", color: ringColor, timeRemaining, combined: true,
           pullC: (idx) => (idx > 0 ? attrs[`probe_${idx + 1}_pull_temp`] ?? null : pullTemp),
           caption: (attrs.probe_active || []).filter(Boolean).length > 1,
         })
-      : `<div style="position:relative;">${this._viewToggle("cp-view-toggle", true)}${ringHtml}</div>`;
+      : `<div style="position:relative;">${this._viewToggle("cp-view-toggle", true, "combined")}${ringHtml}</div>`;
 
     this._html = `
       <ha-card>
@@ -2349,13 +2366,13 @@ class CookPredictorCard extends HTMLElement {
               ${centerSecondary}
             </text>
           </svg>`;
-        const graphView = this._view === "graph";
+        const graphView = this._viewFor(i) === "graph";
         const visual = graphView
           ? this._graphBlock(i, {
               toggleId: `cp-view-toggle-${i}`, color: ringColor, pullC: pd.pullTemp,
               timeRemaining: pd.timeRemaining, compact: true, showEta: false,
             })
-          : `<div style="position:relative;">${this._viewToggle(`cp-view-toggle-${i}`, true)}${ringHtml}</div>`;
+          : `<div style="position:relative;">${this._viewToggle(`cp-view-toggle-${i}`, true, i)}${ringHtml}</div>`;
 
         contentBlock = `
           ${visual}
